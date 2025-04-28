@@ -2,111 +2,89 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import tensorflow as tf
-import tensorflow.contrib.slim as slim
-
-import sys
+import torch
 import numpy as np
-
 from tqdm import tqdm
 
 def sqr_dist(x, y, e=1e-8):
-
-    #assert len(list(x.get_shape())) == 2 and len(list(y.get_shape()))==2, 'illegal inputs'
-    xx = tf.reduce_sum(tf.square(x) + 1e-10, axis=1)
-    yy = tf.reduce_sum(tf.square(y) + 1e-10, axis=1)
-    xy = tf.matmul(x, y, transpose_b=True)
-    dist = tf.expand_dims(xx, 1) + tf.expand_dims(yy, 0) - 2.* xy
+    xx = torch.sum(torch.square(x) + 1e-10, dim=1)
+    yy = torch.sum(torch.square(y) + 1e-10, dim=1)
+    xy = torch.matmul(x, y.t())
+    dist = xx.unsqueeze(1) + yy.unsqueeze(0) - 2. * xy
     return dist
 
-
 def median_distance(H):
-    V = tf.reshape(H, [-1])
-    n = tf.size(V)
-    top_k, _ = tf.nn.top_k(V, k= (n // 2) + 1)
-    return tf.cond(
-        tf.equal(n%2, 0),
-        lambda: (top_k[-1] + top_k[-2]) / 2.0,
-        lambda: top_k[-1]
-    )
-    #return tf.maximum(h, 1e-6)
-    return h 
-
+    V = H.reshape(-1)
+    n = V.numel()
+    top_k, _ = torch.topk(V, k=(n // 2) + 1)
+    if n % 2 == 0:
+        return (top_k[-1] + top_k[-2]) / 2.0
+    return top_k[-1]
 
 def poly_kernel(x, subtract_mean=True, e=1e-8):
     if subtract_mean:
-        x = x - tf.reduce_mean(x, axis=0)
-    kxy = 1 + tf.matmul(x, x, transpose_b=True)
-    kxkxy = x * x.get_shape()[0]
+        x = x - torch.mean(x, dim=0)
+    kxy = 1 + torch.matmul(x, x.t())
+    kxkxy = x * x.size(0)
     return kxy, dxkxy
-
 
 def rbf_kernel(x, h=-1, to3d=False):
-
     H = sqr_dist(x, x)
     if h == -1:
-        h = tf.maximum(1e-6, median_distance(H))
+        h = torch.maximum(torch.tensor(1e-6), median_distance(H))
 
-    kxy = tf.exp(-H / h)
-    dxkxy = -tf.matmul(kxy, x)
-    sumkxy = tf.reduce_sum(kxy, axis=1, keep_dims=True)
+    kxy = torch.exp(-H / h)
+    dxkxy = -torch.matmul(kxy, x)
+    sumkxy = torch.sum(kxy, dim=1, keepdim=True)
     dxkxy = (dxkxy + x * sumkxy) * 2. / h
 
-    if to3d: dxkxy = -(tf.expand_dims(x, 1) - tf.expand_dims(x, 0)) * tf.expand_dims(kxy, 2) * 2. / h
+    if to3d:
+        dxkxy = -(x.unsqueeze(1) - x.unsqueeze(0)) * kxy.unsqueeze(2) * 2. / h
     return kxy, dxkxy
-
 
 def imq_kernel(x, h=-1):
     H = sqr_dist(x, x)
     if h == -1:
         h = median_distance(H)
 
-    kxy = 1. / tf.sqrt(1. + H / h) 
+    kxy = 1. / torch.sqrt(1. + H / h) 
 
     dxkxy = .5 * kxy / (1. + H / h)
-    dxkxy = -tf.matmul(dxkxy, x)
-    sumkxy = tf.reduce_sum(kxy, axis=1, keep_dims=True)
+    dxkxy = -torch.matmul(dxkxy, x)
+    sumkxy = torch.sum(kxy, dim=1, keepdim=True)
     dxkxy = (dxkxy + x * sumkxy) * 2. / h
 
     return kxy, dxkxy
 
-
 def kernelized_stein_discrepancy(X, score_q, kernel='rbf', h=-1, **model_params):
-    n, dim = tf.cast(tf.shape(X)[0], tf.float32), tf.cast(tf.shape(X)[1], tf.float32)
+    n, dim = torch.tensor(X.size(0), dtype=torch.float32), torch.tensor(X.size(1), dtype=torch.float32)
     Sqx = score_q(X, **model_params)
 
     H = sqr_dist(X, X)
     if h == -1:
         h = median_distance(H) # 2sigma^2
-    h = tf.sqrt(h/2.)
+    h = torch.sqrt(h/2.)
     # compute the rbf kernel
-    Kxy = tf.exp(-H / h ** 2 / 2.)
+    Kxy = torch.exp(-H / h ** 2 / 2.)
 
-    Sqxdy = -(tf.matmul(Sqx, X, transpose_b=True) - tf.reduce_sum(Sqx * X, axis=1, keep_dims=True)) / (h ** 2)
+    Sqxdy = -(torch.matmul(Sqx, X.t()) - torch.sum(Sqx * X, dim=1, keepdim=True)) / (h ** 2)
 
-    dxSqy = tf.transpose(Sqxdy)
+    dxSqy = Sqxdy.t()
     dxdy = (-H / (h ** 4) + dim / (h ** 2))
 
-    M = (tf.matmul(Sqx, Sqx, transpose_b=True) + Sqxdy + dxSqy + dxdy) * Kxy 
-    #M2 = M - T.diag(T.diag(M)) 
-
-    #ksd_u = tf.reduce_sum(M2) / (n * (n - 1)) 
-    #ksd_v = tf.reduce_sum(M) / (n ** 2) 
-
-    #return ksd_v
+    M = (torch.matmul(Sqx, Sqx.t()) + Sqxdy + dxSqy + dxdy) * Kxy 
     return M
 
-
 def svgd_gradient(x, grad, kernel='rbf', temperature=1., u_kernel=None, **kernel_params):
-    assert x.get_shape()[1:] == grad.get_shape()[1:], 'illegal inputs and grads'
-    p_shape = tf.shape(x)
-    if tf.keras.backend.ndim(x) > 2:
-        x = tf.reshape(x, (tf.shape(x)[0], -1))
-        grad = tf.reshape(grad, (tf.shape(grad)[0], -1))
+    assert x.shape[1:] == grad.shape[1:], 'illegal inputs and grads'
+    p_shape = x.shape
+    if x.dim() > 2:
+        x = x.reshape(x.size(0), -1)
+        grad = grad.reshape(grad.size(0), -1)
 
     if u_kernel is not None:
         kxy, dxkxy = u_kernel['kxy'], u_kernel['dxkxy']
-        dxkxy = tf.reshape(dxkxy, tf.shape(x))
+        dxkxy = dxkxy.reshape(x.shape)
     else:
         if kernel == 'rbf':
             kxy, dxkxy = rbf_kernel(x, **kernel_params)
@@ -115,55 +93,60 @@ def svgd_gradient(x, grad, kernel='rbf', temperature=1., u_kernel=None, **kernel
         elif kernel == 'imq':
             kxy, dxkxy = imq_kernel(x)
         elif kernel == 'none':
-            kxy = tf.eye(tf.shape(x)[0])
-            dxkxy = tf.zeros_like(x)
+            kxy = torch.eye(x.size(0))
+            dxkxy = torch.zeros_like(x)
         else:
             raise NotImplementedError
 
-    svgd_grad = (tf.matmul(kxy, grad) + temperature * dxkxy) / tf.reduce_sum(kxy, axis=1, keep_dims=True)
+    svgd_grad = (torch.matmul(kxy, grad) + temperature * dxkxy) / torch.sum(kxy, dim=1, keepdim=True)
 
-    svgd_grad = tf.reshape(svgd_grad, p_shape)
+    svgd_grad = svgd_grad.reshape(p_shape)
     return svgd_grad
 
-
 def lrelu(x, leak=0.2, name="lrelu"):
-    with tf.variable_scope(name):
-        f1 = 0.5 * (1 + leak)
-        f2 = 0.5 * (1 - leak)
-        return f1 * x + f2 * abs(x)
-
+    f1 = 0.5 * (1 + leak)
+    f2 = 0.5 * (1 - leak)
+    return f1 * x + f2 * torch.abs(x)
 
 def selu(x):
     alpha = 1.6732632423543772848170429916717
     scale = 1.0507009873554804934193349852946
-    return scale * tf.where(x > 0.0, x, alpha * tf.exp(x) - alpha)
-
+    return scale * torch.where(x > 0.0, x, alpha * torch.exp(x) - alpha)
 
 def huber_loss(labels, predictions, delta=1.0):
-    residual = tf.abs(predictions - labels)
-    condition = tf.less(residual, delta)
-    small_res = 0.5 * tf.square(residual)
-    large_res = delta * residual - 0.5 * tf.square(delta)
-    return tf.where(condition, small_res, large_res)
+    residual = torch.abs(predictions - labels)
+    condition = residual < delta
+    small_res = 0.5 * torch.square(residual)
+    large_res = delta * residual - 0.5 * torch.square(torch.tensor(delta))
+    return torch.where(condition, small_res, large_res)
 
+def conv2d(inputs, num_outputs, activation_fn=torch.nn.ReLU(),
+           kernel_size=5, stride=2, padding='same', name="conv2d"):
+    return torch.nn.Conv2d(
+        in_channels=inputs.size(1),
+        out_channels=num_outputs,
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        bias=True
+    )(inputs)
 
-def conv2d(inputs, num_outputs, activation_fn=tf.nn.relu,
-           kernel_size=5, stride=2, padding='SAME', name="conv2d"):
+def deconv2d(inputs, num_outputs, activation_fn=torch.nn.ReLU(),
+        kernel_size=5, stride=2, padding='same', name="deconv2d"):
+    return torch.nn.ConvTranspose2d(
+        in_channels=inputs.size(1),
+        out_channels=num_outputs,
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        bias=True
+    )(inputs)
 
-    with tf.variable_scope(name):
-        return tf.contrib.layers.conv2d( inputs, num_outputs, kernel_size, stride=stride, padding=padding, activation_fn=activation_fn)
-
-
-def deconv2d(inputs, num_outputs, activation_fn=tf.nn.relu,
-        kernel_size=5, stride=2, padding='SAME', name="deconv2d"):
-
-    with tf.variable_scope(name):
-        return tf.contrib.layers.conv2d_transpose(inputs, num_outputs, kernel_size, stride=stride, padding=padding, activation_fn=activation_fn)
-
-
-def fc(input, output_shape, activation_fn=tf.nn.relu, init=None, name="fc"):
-    if init is None: init = tf.glorot_uniform_initializer()
-    output = slim.fully_connected(input, int(output_shape), activation_fn=activation_fn, weights_initializer=init)
-    return output
+def fc(input, output_shape, activation_fn=torch.nn.ReLU(), init=None, name="fc"):
+    if init is None: 
+        init = torch.nn.init.kaiming_uniform_
+    layer = torch.nn.Linear(input.size(1), int(output_shape), bias=True)
+    init(layer.weight)
+    return activation_fn(layer(input))
 
 

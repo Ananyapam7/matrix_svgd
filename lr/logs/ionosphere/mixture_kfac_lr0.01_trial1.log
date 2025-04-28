@@ -1,0 +1,13 @@
+[33m[2025-04-28 20:20:57,205] nothing will be saved.[0m
+Dataset: Ionosphere
+Instances: 351, Features: 34
+Categorical features: 0, Numerical features: 34
+Training set size: 224
+Validation set size: 56
+Test set size: 71
+Feature dimension: 35
+2025-04-28 20:21:37,077 - Training Starts!
+2025-04-28 20:21:37,077 - ------------------------------------------------------------------------------------------------------------------------
+2025-04-28 20:21:37,077 -   Step |   Train LL |  Train Acc |   Valid LL |  Valid Acc |    Test LL |   Test Acc
+2025-04-28 20:21:37,077 - ------------------------------------------------------------------------------------------------------------------------
+Training:   0%|          | 0/2000 [00:00<?, ?step/s]

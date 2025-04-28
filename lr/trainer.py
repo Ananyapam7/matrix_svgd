@@ -3,133 +3,147 @@ from __future__ import division
 from __future__ import print_function
 
 from sklearn.utils import shuffle
-import tensorflow as tf
+import torch
 import numpy as np
 from pprint import pprint
 import sys
-
-from util import log
+from tqdm import tqdm
+import datetime
+import json
 import os
 import glob
 import time
+import logging
 
-from model_svgd import  SVGD
+from util import log
+from model_svgd import SVGD
 from load_data import load_uci_dataset
 
 
 #import pdb
 
-class Trainer(object):
-
-    def optimize_sgd(self, train_vars, loss=None, train_grads=None, lr=1e-2):
-        optimizer = tf.train.GradientDescentOptimizer(learning_rate=lr)  #adagrad with momentum
-        if train_grads is not None:
-            train_op = optimizer.apply_gradients(zip(train_grads, train_vars))
-        else:
-            train_op = optimizer.minimize(tf.reduce_mean(loss), var_list=train_vars, global_step=self.global_step)
-        return train_op
-
-    def optimize_adagrad(self, train_vars, loss=None, train_grads=None, lr=1e-2):
-        optimizer = tf.train.RMSPropOptimizer(learning_rate=lr, decay=0.9)  #adagrad with momentum
-        if train_grads is not None:
-            train_op = optimizer.apply_gradients(zip(train_grads, train_vars))
-        else:
-            train_op = optimizer.minimize(tf.reduce_mean(loss), var_list=train_vars, global_step=self.global_step)
-        return train_op
-
-
-    def optimize_adam(self, train_vars, loss=None, train_grads=None, lr=1e-2):
-        assert (loss is not None) or (train_grads is not None), 'illegal inputs'
-        optimizer = tf.train.AdamOptimizer(lr)
-        if train_grads is not None:
-            train_op = optimizer.apply_gradients(zip(train_grads, train_vars))
-        else:
-            train_op = optimizer.minimize(loss, var_list=train_vars, global_step=self.global_step)
-        return train_op
-
-
-    def __init__(self, config, dataset, session):
+class Trainer:
+    def __init__(self, config, dataset):
         self.config = config
-        self.session = session
         self.dataset = dataset
 
-        self.filepath = '%s' % (
-            config.method,
-        )
+        # Create timestamp for unique log directory
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.filepath = f'{config.method}_{timestamp}'
+        self.train_dir = os.path.join('train_dir', self.filepath)
+        self.log_dir = os.path.join('logs', self.filepath)
 
-        self.train_dir = './train_dir/%s' % self.filepath
-        #self.fig_dir = './figures/%s' % self.filepath
+        # Create directories
+        for directory in [self.train_dir, self.log_dir]:
+            if not os.path.exists(directory):
+                os.makedirs(directory)
 
-        #for folder in [self.train_dir, self.fig_dir]:
-        for folder in [self.train_dir]:
-            if not os.path.exists(folder):
-                os.makedirs(folder)
-            # clean train folder
-            if self.config.clean:
-                files = glob.glob(folder + '/*')
-                for f in files: os.remove(f)
+        # Save config to log directory
+        config_dict = vars(config)
+        with open(os.path.join(self.log_dir, 'config.json'), 'w') as f:
+            json.dump(config_dict, f, indent=4)
 
-        #log.infov("Train Dir: %s, Figure Dir: %s", self.train_dir, self.fig_dir)
+        # Create log file
+        self.log_file = os.path.join(self.log_dir, 'training.log')
+        self.setup_logging()
 
-        # --- create model ---
+        if self.config.clean:
+            files = glob.glob(self.train_dir + '/*')
+            for f in files:
+                os.remove(f)
+
+        # Create model
         self.model = SVGD(config)
-
-        # --- optimizer ---
-        #self.global_step = tf.contrib.framework.get_or_create_global_step(graph=None)
-        self.global_step = tf.Variable(0, name="global_step")
-
-        self.learning_rate = config.learning_rate
-        #self.learning_rate = tf.train.exponential_decay(
-        #        self.learning_rate,
-        #        global_step=self.global_step,
-        #        decay_steps=500,
-        #        decay_rate=0.5,
-        #        staircase=True,
-        #        name='decaying_learning_rate'
-        #)
-
-        self.summary_op = tf.summary.merge_all()
-        self.saver = tf.train.Saver(max_to_keep=1)
-        self.summary_writer = tf.summary.FileWriter(self.train_dir)
-        self.checkpoint_secs = 300  # 5 min
-
-        ##self.train_op = self.optimize_adam( self.model.kl_loss, lr=self.learning_rate)
-        if self.config.method == 'svgd':
-            self.train_op = self.optimize_adagrad( self.model.train_vars, train_grads=self.model.svgd_grads, lr=self.learning_rate)
-        elif self.config.method == 'svgd_kfac':
-            self.train_op = self.optimize_adagrad( self.model.train_vars, train_grads=self.model.kfac_grads, lr=self.learning_rate)
-        elif self.config.method == 'mixture_kfac':
-            self.train_op = self.optimize_adagrad( self.model.train_vars, train_grads=self.model.mixture_grads, lr=self.learning_rate)
-        elif self.config.method in ['SGLD', 'pSGLD']:
-            self.train_op = self.optimize_sgd( self.model.train_vars, train_grads=self.model.psgld_grads, lr=1.0)
-
-        tf.global_variables_initializer().run()
-        if config.checkpoint is not None:
-            self.ckpt_path = tf.train.latest_checkpoint(self.config.checkpoint)
-            if self.ckpt_path is not None:
-                log.info("Checkpoint path: %s", self.ckpt_path)
-                self.saver.restore(self.session, self.ckpt_path)
-                log.info("Loaded the pretrain parameters from the provided checkpoint path")
-
-
-    def evaluate(self, step):
         
+        # Create optimizer
+        if config.method == 'svgd':
+            self.optimizer = torch.optim.RMSprop(self.model.parameters(), lr=config.learning_rate)
+        elif config.method == 'svgd_kfac':
+            self.optimizer = torch.optim.RMSprop(self.model.parameters(), lr=config.learning_rate)
+        elif config.method == 'mixture_kfac':
+            self.optimizer = torch.optim.RMSprop(self.model.parameters(), lr=config.learning_rate)
+        elif config.method in ['SGLD', 'pSGLD']:
+            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=1.0)
+
+        # Initialize step counter
+        self.step = 0
+
+    def setup_logging(self):
+        """Setup logging to both file and console"""
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(message)s',
+            handlers=[
+                logging.FileHandler(self.log_file),
+                logging.StreamHandler(sys.stdout)
+            ]
+        )
+        self.logger = logging.getLogger(__name__)
+
+    def log_metrics(self, metrics, step):
+        """Log metrics to both file and console"""
+        train_ll, train_acc, valid_ll, valid_acc, test_ll, test_acc = metrics
+        metrics_str = (
+            f"Step {step:4d} | "
+            f"Train LL: {train_ll:.4f} | Train Acc: {train_acc:.4f} | "
+            f"Valid LL: {valid_ll:.4f} | Valid Acc: {valid_acc:.4f} | "
+            f"Test LL: {test_ll:.4f} | Test Acc: {test_acc:.4f}"
+        )
+        self.logger.info(metrics_str)
+
+    def train_step(self, x_batch, y_batch):
+        self.optimizer.zero_grad()
+        
+        # Convert inputs to tensors if they aren't already
+        if not isinstance(x_batch, torch.Tensor):
+            x_batch = torch.tensor(x_batch, dtype=torch.float32)
+        if not isinstance(y_batch, torch.Tensor):
+            y_batch = torch.tensor(y_batch, dtype=torch.float32)
+        
+        ll, acc = self.model((x_batch, y_batch), training=True)
+            
+        if self.config.method == 'svgd':
+            grads = self.model.svgd_grads
+        elif self.config.method == 'svgd_kfac':
+            grads = self.model.kfac_grads
+        elif self.config.method == 'mixture_kfac':
+            grads = self.model.mixture_grads
+        elif self.config.method in ['SGLD', 'pSGLD']:
+            grads = self.model.psgld_grads
+
+        # Apply gradients manually since we're using custom gradients
+        for param, grad in zip(self.model.parameters(), grads):
+            param.grad = grad
+            
+        self.optimizer.step()
+        
+        # Update step counters
+        self.step += 1
+        self.model.step += 1.0
+        
+        return ll.item(), acc.item()
+
+    def evaluate(self):
         def get_lik_and_acc(X, y):
             n = len(X)
             ll, acc = [], []
             batch_size = 2000
-            for i in range( n // batch_size +1 ):
+            
+            # Convert to tensors
+            X = torch.tensor(X, dtype=torch.float32)
+            y = torch.tensor(y, dtype=torch.float32)
+            
+            for i in range(n // batch_size + 1):
                 start = i * batch_size
                 end = min((i+1)*batch_size, n)
-                batch = {
-                    'X': X[start:end],
-                    'y': y[start:end],
-                }
-                ll_i, acc_i = self.session.run([self.model.ll, self.model.accuracy], feed_dict=self.model.get_feed_dict(batch, step))
-
+                x_batch = X[start:end]
+                y_batch = y[start:end]
+                
+                with torch.no_grad():
+                    ll_i, acc_i = self.model((x_batch, y_batch))
                 ll.append(ll_i)
                 acc.append(acc_i)
-            return np.mean(ll), np.mean(acc)
+            return torch.mean(torch.tensor(ll)), torch.mean(torch.tensor(acc))
 
         train_ll, train_acc = get_lik_and_acc(self.dataset.x_train, self.dataset.y_train)
         valid_ll, valid_acc = get_lik_and_acc(self.dataset.x_valid, self.dataset.y_valid)
@@ -137,93 +151,56 @@ class Trainer(object):
 
         return train_ll, train_acc, valid_ll, valid_acc, test_ll, test_acc
 
-
-
     def train(self):
-        log.infov("Training Starts!")
-        output_save_step = 1000
-        buffer_save_step = 100
-        self.session.run(self.global_step.assign(0)) # reset global step
+        self.logger.info("Training Starts!")
         n_updates = 1
+        total_steps = 2000  # Run for exactly 2000 steps
 
-        for ep in xrange(1, 1+self.config.n_epoches):
+        # Print header
+        self.logger.info("-" * 120)
+        self.logger.info(f"{'Step':>6} | {'Train LL':>10} | {'Train Acc':>10} | {'Valid LL':>10} | {'Valid Acc':>10} | {'Test LL':>10} | {'Test Acc':>10}")
+        self.logger.info("-" * 120)
+
+        # Create progress bar
+        pbar = tqdm(total=total_steps, desc="Training", unit="step")
+        last_eval_step = 0
+
+        while n_updates <= total_steps:
+            # Shuffle data at the start of each epoch
             x_train, y_train = shuffle(self.dataset.x_train, self.dataset.y_train)
+            
+            # Calculate batches for this epoch
             max_batches = self.config.n_train // self.config.batch_size 
 
-            #if self.config.n_train % self.config.batch_size != 0: max_batches += 1
-            for bi in xrange(max_batches):
+            for bi in range(max_batches):
+                if n_updates > total_steps:
+                    break
+
                 start = bi * self.config.batch_size
                 end = min((bi+1) * self.config.batch_size, self.config.n_train)
 
-                batch_chunk = {
-                    'X': x_train[start:end],
-                    'y': y_train[start:end]
-                }
+                x_batch = x_train[start:end]
+                y_batch = y_train[start:end]
 
-                step, summary, log_prob, step_time = \
-                        self.run_single_step(n_updates, batch_chunk)
+                ll, acc = self.train_step(x_batch, y_batch)
 
-                #if np.any(np.isnan(log_prob)): sys.exit(1)
+                # Update progress bar
+                pbar.update(1)
+                pbar.set_postfix({
+                    'Train LL': f'{ll:.4f}',
+                    'Train Acc': f'{acc:.4f}'
+                })
 
-                self.summary_writer.add_summary(summary, global_step=step)
-                #if n_updates % 100 == 0:
-                #    self.log_step_message(n_updates, log_prob, step_time)
+                # Evaluate every 200 steps
+                if n_updates - last_eval_step >= 200:
+                    metrics = self.evaluate()
+                    self.log_metrics(metrics, n_updates)
+                    last_eval_step = n_updates
 
-                if n_updates % 50 == 0:
-                    print (n_updates, self.evaluate(n_updates))
+                n_updates += 1
 
-                n_updates+= 1
-
-
-            #if ep % (self.config.n_epoches//10 + 1) == 0:
-            #    rmse, ll = self.evaluate()
-            #    print(ep, rmse, ll)
-
-        #test_rmse, test_ll = self.evaluate()
-        #write_time = time.strftime("%m-%d-%H:%M:%S")
-        #with open(self.config.savepath + self.config.dataset + "_test_ll_rmse_%s.txt" % (self.filepath), 'a') as f:
-        #    f.write(repr(self.config.trial) + ',' + write_time + ',' + repr(self.config.n_epoches) + ',' + repr(test_rmse) + ',' + repr(test_ll) + '\n')
-
-        #if self.config.save:
-        #    # save model at the end
-        #    self.saver.save(self.session,
-        #        os.path.join(self.train_dir, 'model'),
-        #        global_step=step)
-
-
-    def run_single_step(self, step, batch_chunk):
-        _start_time = time.time()
-        fetch = [self.global_step, self.summary_op, self.model.log_prob]
-        if self.config.method in ['mixture_kfac', 'svgd_kfac']:
-            fetch += [self.model.cov_update_step]
-
-        if self.config.method == 'pSGLD':
-            fetch += [self.model.moment_op]
-
-        fetch += [self.train_op]
-
-        fetch_values = self.session.run(
-            fetch, feed_dict = self.model.get_feed_dict(batch_chunk, step)
-        )
-
-        [step, summary, log_prob] = fetch_values[:3]
-        _end_time = time.time()
-        return step, summary, log_prob, (_end_time - _start_time)
-
-
-    def log_step_message(self, step, log_prob, step_time, is_train=True):
-        if step_time == 0:
-            step_time = 0.001
-        log_fn = (is_train and log.info or log.infov)
-        log_fn((" [{split_mode:5s} step {step:4d}] " +
-                #"loss: {loss:.4f} " +
-                "log_prob: {log_prob:.4f} " +
-                "({sec_per_batch:.3f} sec/batch)"
-                ).format(split_mode=(is_train and 'train' or 'val'),
-                         step=step, log_prob=log_prob,
-                         sec_per_batch=step_time,
-                         )
-               )
+        pbar.close()
+        self.logger.info("Training Completed!")
 
 def main():
     import argparse
@@ -232,7 +209,9 @@ def main():
     parser.add_argument('--method', type=str, default='svgd', choices=['SGLD', 'pSGLD', 'svgd', 'svgd_kfac', 'mixture_kfac'], required=True)
     parser.add_argument('--n_particles', type=int, default=20, required=False)
     parser.add_argument('--batch_size', type=int, default=256, required=False)
-    parser.add_argument('--dataset', type=str, default='covtype', required=False, choices=['covtype'])
+    parser.add_argument('--dataset', type=str, default='ionosphere', required=False, 
+                       choices=['ionosphere', 'breastcancer', 'heart-disease', 'austrailia-credit', 
+                               'sonar', 'banknote', 'mammographic-masses', 'parkinsons', 'tic-tac-toe'])
     parser.add_argument('--trial', type=int, default=1, required=False)
     parser.add_argument('--learning_rate', type=float, default=5e-3, required=False)
     parser.add_argument('--kernel', type=str, default='rbf', required=False)
@@ -245,24 +224,22 @@ def main():
     if not config.save:
         log.warning("nothing will be saved.")
 
-    session_config = tf.ConfigProto(
-
-        allow_soft_placement=True,
-        gpu_options=tf.GPUOptions(allow_growth=True),
-        device_count={'GPU': 0},
+    # Load dataset
+    x_train, x_valid, x_test, y_train, y_valid, y_test = load_uci_dataset(config.dataset, random_state=config.trial)
+    
+    # Set dataset dimensions
+    config.n_train, config.dim = x_train.shape
+    
+    # Create dataset object
+    from collections import namedtuple
+    dataset = namedtuple("dataset", "x_train, x_valid, x_test, y_train, y_valid, y_test")(
+        x_train=x_train, x_valid=x_valid, x_test=x_test,
+        y_train=y_train, y_valid=y_valid, y_test=y_test
     )
-
-    with tf.Graph().as_default(), tf.Session(config=session_config) as sess:
-
-        from collections import namedtuple
-        dataStruct = namedtuple("dataStruct", "x_train, x_valid, x_test, y_train, y_valid, y_test")
-
-        x_train, x_valid, x_test, y_train, y_valid, y_test = load_uci_dataset(dataset = config.dataset, random_state = config.trial)
-        config.n_train, config.dim = x_train.shape
-        dataset = dataStruct(x_train=x_train, x_valid=x_valid, x_test=x_test, \
-                                 y_train=y_train, y_valid=y_valid, y_test=y_test)
-        trainer = Trainer(config, dataset, sess)
-        trainer.train()
+    
+    # Create trainer and start training
+    trainer = Trainer(config, dataset)
+    trainer.train()
 
 
 if __name__ == '__main__':

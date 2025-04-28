@@ -1,0 +1,16 @@
+{
+    "n_epoches": 2,
+    "method": "mixture_kfac",
+    "n_particles": 20,
+    "batch_size": 256,
+    "dataset": "ionosphere",
+    "trial": 1,
+    "learning_rate": 0.01,
+    "kernel": "rbf",
+    "clean": false,
+    "savepath": "results/",
+    "checkpoint": null,
+    "save": false,
+    "n_train": 224,
+    "dim": 35
+}

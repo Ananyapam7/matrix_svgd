@@ -1,0 +1,15 @@
+2025-04-28 20:17:00,633 - Training Starts!
+2025-04-28 20:17:00,633 - ------------------------------------------------------------------------------------------------------------------------
+2025-04-28 20:17:00,633 -   Step |   Train LL |  Train Acc |   Valid LL |  Valid Acc |    Test LL |   Test Acc
+2025-04-28 20:17:00,633 - ------------------------------------------------------------------------------------------------------------------------
+2025-04-28 20:17:01,398 - Step  200 | Train LL: -0.1973 | Train Acc: 0.9588 | Valid LL: -0.1794 | Valid Acc: 0.9890 | Test LL: -0.1713 | Test Acc: 0.9737
+2025-04-28 20:17:02,246 - Step  400 | Train LL: -0.1522 | Train Acc: 0.9643 | Valid LL: -0.1304 | Valid Acc: 0.9890 | Test LL: -0.1262 | Test Acc: 0.9737
+2025-04-28 20:17:02,971 - Step  600 | Train LL: -0.1319 | Train Acc: 0.9670 | Valid LL: -0.1091 | Valid Acc: 0.9890 | Test LL: -0.1070 | Test Acc: 0.9737
+2025-04-28 20:17:03,669 - Step  800 | Train LL: -0.1203 | Train Acc: 0.9725 | Valid LL: -0.0975 | Valid Acc: 0.9890 | Test LL: -0.0966 | Test Acc: 0.9825
+2025-04-28 20:17:04,506 - Step 1000 | Train LL: -0.1123 | Train Acc: 0.9780 | Valid LL: -0.0895 | Valid Acc: 0.9890 | Test LL: -0.0898 | Test Acc: 0.9912
+2025-04-28 20:17:05,185 - Step 1200 | Train LL: -0.1063 | Train Acc: 0.9780 | Valid LL: -0.0838 | Valid Acc: 0.9890 | Test LL: -0.0847 | Test Acc: 0.9912
+2025-04-28 20:17:05,950 - Step 1400 | Train LL: -0.1016 | Train Acc: 0.9780 | Valid LL: -0.0795 | Valid Acc: 0.9890 | Test LL: -0.0809 | Test Acc: 0.9912
+2025-04-28 20:17:06,666 - Step 1600 | Train LL: -0.0979 | Train Acc: 0.9780 | Valid LL: -0.0760 | Valid Acc: 0.9890 | Test LL: -0.0780 | Test Acc: 0.9912
+2025-04-28 20:17:07,342 - Step 1800 | Train LL: -0.0949 | Train Acc: 0.9780 | Valid LL: -0.0733 | Valid Acc: 0.9890 | Test LL: -0.0757 | Test Acc: 0.9912
+2025-04-28 20:17:08,134 - Step 2000 | Train LL: -0.0924 | Train Acc: 0.9780 | Valid LL: -0.0710 | Valid Acc: 0.9890 | Test LL: -0.0737 | Test Acc: 0.9912
+2025-04-28 20:17:08,135 - Training Completed!
